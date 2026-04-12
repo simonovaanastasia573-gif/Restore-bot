@@ -20,7 +20,7 @@ def keep_alive():
 
 # Твои ключи
 TG_TOKEN = '8279520356:AAEpnBNi_COSffWE9BBQJuhwoNUY3LuCdJQ'
-HF_TOKEN = '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' # Я подставил твой рабочий токен
+HF_TOKEN = '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' # Я подставил твой рабочий токен
 
 bot = telebot.TeleBot(TG_TOKEN)
 client = Client("TencentARC/GFPGAN", token=HF_TOKEN)

@@ -16,7 +16,7 @@ def keep_alive():
     t.start()
 
 # 2. КЛЮЧИ
-TG_TOKEN = '8279520356:AAEpnBNi_COSffWE9BBQJuhwoNUY3LuCdJQ'
+TG_TOKEN = '8279520356:AAFtZme6M5sXsqYXp1Eh2 lAoGsnAhbzX0Rs'
 HF_TOKEN = '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'
 
 bot = telebot.TeleBot(TG_TOKEN)

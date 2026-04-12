@@ -84,3 +84,24 @@ if __name__ == "__main__":
     connect_client() # Пытаемся подключиться при запуске
     print("Бот запущен!")
     bot.polling(none_stop=True)
+if __name__ == "__main__":
+    try:
+        # 1. Запуск веб-сервера для Render
+        keep_alive() 
+        
+        # 2. Очистка старых соединений (очень важно после смены токена!)
+        print("Очистка старых сессий Telegram...")
+        bot.remove_webhook()
+        
+        # 3. Подключение к нейросети
+        print("Подключение к нейросети...")
+        connect_client()
+        
+        print("✅ БОТ ЗАПУЩЕН И ГОТОВ К РАБОТЕ!")
+        
+        # 4. Запуск прослушивания сообщений
+        # skip_pending=True заставит бота игнорировать старые сообщения, присланные во время простоя
+        bot.polling(none_stop=True, skip_pending=True, timeout=60)
+        
+    except Exception as e:
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА ПРИ ЗАПУСКЕ: {e}")

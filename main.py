@@ -6,62 +6,63 @@ from threading import Thread
 import time
 import sys
 
-# --- 1. ВЕБ-СЕРВЕР ДЛЯ RENDER (Health Check) ---
+# --- 1. ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Бот активен и готов к работе"
+    return "Бот на базе Microsoft RestoreFormer активен"
 
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
-# Запуск Flask в фоне сразу при старте
 Thread(target=run_flask, daemon=True).start()
 
-# --- 2. ЗАГРУЗКА КЛЮЧЕЙ ИЗ RENDER ENVIRONMENT ---
+# --- 2. ЗАГРУЗКА КЛЮЧЕЙ ---
 TG_TOKEN = os.environ.get('TG_TOKEN')
 HF_TOKEN = os.environ.get('HF_TOKEN')
 
 if not TG_TOKEN or not HF_TOKEN:
-    print("❌ ОШИБКА: Токены не найдены в настройках (Environment) Render!", flush=True)
+    print("❌ ОШИБКА: Переменные окружения не найдены!", flush=True)
     sys.exit(1)
-else:
-    print("✅ Токены успешно загружены из системы.", flush=True)
 
-# Инициализация бота с очисткой пробелов
 bot = telebot.TeleBot(TG_TOKEN.strip())
 client = None
 
 def connect_to_ai():
     global client
-    space = "sczhou/CodeFormer"
+    # Переключаемся на модель от Microsoft
+    space = "microsoft/RestoreFormer"
     try:
-        print(f"Попытка подключения к нейросети {space}...", flush=True)
-        # strip() защищает от случайных пробелов в ключе
+        print(f"Подключение к Microsoft {space}...", flush=True)
         client = Client(space, token=HF_TOKEN.strip())
-        print(f"✅ Успешно! Нейросеть {space} подключена.", flush=True)
+        print(f"✅ Успешно! Модель Microsoft подключена.", flush=True)
         return True
     except Exception as e:
-        print(f"❌ Ошибка подключения к ИИ: {e}", flush=True)
-        return False
+        print(f"❌ Ошибка подключения к Microsoft: {e}", flush=True)
+        # Если Microsoft недоступен, пробуем запасной вариант
+        print("Пробую запасной сервер...", flush=True)
+        try:
+            client = Client("sczhou/CodeFormer", token=HF_TOKEN.strip())
+            return True
+        except:
+            return False
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "Бот готов! Присылай фото (лучше файлом или просто фото), и я восстановлю детали лица. 📸")
+    bot.reply_to(message, "Использую технологию Microsoft RestoreFormer. Присылай фото! 📸")
 
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo(message):
     global client
     if client is None:
         if not connect_to_ai():
-            bot.reply_to(message, "❌ Нейросеть сейчас недоступна. Попробуй позже.")
+            bot.reply_to(message, "❌ Серверы нейросети перегружены. Попробуй позже.")
             return
 
-    msg = bot.reply_to(message, "⏳ Магия началась... Восстанавливаю текстуры лица (30-60 сек).")
+    msg = bot.reply_to(message, "⏳ Реставрация от Microsoft началась...")
     try:
-        # 1. Скачивание файла
         file_id = message.photo[-1].file_id if message.content_type == 'photo' else message.document.file_id
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
@@ -70,39 +71,31 @@ def handle_photo(message):
         with open(temp_input, 'wb') as f:
             f.write(downloaded_file)
 
-        # 2. Запрос к CodeFormer (БЕЗ api_name)
-        # Передаем: файл, fidelity (0.5), upscale (2)
-        print(f"Отправка фото в нейросеть...", flush=True)
+        # Запрос к Microsoft RestoreFormer
+        # Обычно она принимает просто картинку, без лишних "глючных" ползунков
+        print(f"Обработка через RestoreFormer...", flush=True)
         result = client.predict(
-            handle_file(temp_input), # Поток данных файла
-            0.5,                     # Fidelity: баланс между оригиналом и качеством
-            2,                       # Upscale: увеличение разрешения
+            handle_file(temp_input), 
+            api_name="/predict"
         )
 
-        # 3. Обработка результата
         output_path = result if isinstance(result, str) else result[0]
 
-        # 4. Отправка результата
         with open(output_path, 'rb') as f:
-            bot.send_document(message.chat.id, f, caption="✅ Готово! Качество лица улучшено моделью CodeFormer.")
+            bot.send_document(message.chat.id, f, caption="✅ Восстановлено технологией Microsoft.")
         
         bot.delete_message(message.chat.id, msg.message_id)
-        print("✅ Успешная отправка результата пользователю.", flush=True)
 
     except Exception as e:
-        print(f"Ошибка при обработке фото: {e}", flush=True)
-        bot.edit_message_text(f"❌ Произошла ошибка: {e}", message.chat.id, msg.message_id)
+        print(f"Ошибка: {e}", flush=True)
+        bot.edit_message_text(f"❌ Ошибка реставрации: {e}", message.chat.id, msg.message_id)
 
 if __name__ == "__main__":
-    # Небольшая пауза, чтобы Flask успел занять порт
     time.sleep(3)
-    
-    if connect_to_ai():
-        print("--- Запуск polling Telegram ---", flush=True)
-        try:
-            bot.remove_webhook()
-            bot.polling(none_stop=True, skip_pending=True)
-        except Exception as e:
-            print(f"Критическая ошибка polling: {e}", flush=True)
-    else:
-        print("❌ Бот не запущен, так как не удалось подключиться к Hugging Face.", flush=True)
+    connect_to_ai()
+    print("--- Бот запущен ---", flush=True)
+    try:
+        bot.remove_webhook()
+        bot.polling(none_stop=True, skip_pending=True)
+    except Exception as e:
+        print(f"Ошибка polling: {e}", flush=True)

@@ -23,7 +23,7 @@ TG_TOKEN = '8279520356:AAEpnBNi_COSffWE9BBQJuhwoNUY3LuCdJQ'
 HF_TOKEN = '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' # Я подставил твой рабочий токен
 
 bot = telebot.TeleBot(TG_TOKEN)
-client = Client("TencentARC/GFPGAN", hf_token=HF_TOKEN)
+client = Client("TencentARC/GFPGAN", token=HF_TOKEN)
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):

@@ -20,10 +20,17 @@ def run_flask():
 Thread(target=run_flask, daemon=True).start()
 
 # --- 2. ТВОИ ОБНОВЛЕННЫЕ КЛЮЧИ ---
-# Новый токен Telegram
-TG_TOKEN = '8279520356:AAG8XHOUA7uykCqGMSDDe3Q5U3hOy026-w4'
-# Твой последний HF токен (я исправил H на h)
-HF_TOKEN = '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'
+import os
+
+# Теперь бот будет брать ключи из настроек Render, а не из текста кода
+TG_TOKEN = os.environ.get('TG_TOKEN')
+HF_TOKEN = os.environ.get('HF_TOKEN')
+
+# Проверка, что ключи дошли
+if not TG_TOKEN or not HF_TOKEN:
+    print("❌ ОШИБКА: Токены не найдены в переменных окружения Render!", flush=True)
+else:
+    print("✅ Токены успешно загружены из системы.", flush=True)
 
 bot = telebot.TeleBot(TG_TOKEN.strip())
 client = None

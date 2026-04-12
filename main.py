@@ -23,7 +23,7 @@ Thread(target=run_flask, daemon=True).start()
 # Новый токен Telegram
 TG_TOKEN = '8279520356:AAG8XHOUA7uykCqGMSDDe3Q5U3hOy026-w4'
 # Твой последний HF токен (я исправил H на h)
-HF_TOKEN = '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'
+HF_TOKEN = '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'
 
 bot = telebot.TeleBot(TG_TOKEN.strip())
 client = None

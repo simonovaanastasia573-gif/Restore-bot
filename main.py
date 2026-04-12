@@ -3,56 +3,59 @@ from gradio_client import Client, handle_file
 import os
 from flask import Flask
 from threading import Thread
+import time
 
-# 1. СИСТЕМА ПОДДЕРЖКИ ЖИЗНИ
+# --- БЛОК ЖИЗНИ ДЛЯ RENDER ---
 PORT = int(os.environ.get('PORT', 8080))
 app = Flask('')
-@app.route('/')
-def home(): return "Бот в сети"
-def run(): app.run(host='0.0.0.0', port=PORT)
-def keep_alive():
-    t = Thread(target=run)
-    t.daemon = True
-    t.start()
 
-# 2. КЛЮЧИ
+@app.route('/')
+def home():
+    return "Bot is active"
+
+def run_flask():
+    try:
+        app.run(host='0.0.0.0', port=PORT)
+    except Exception as e:
+        print(f"Flask error: {e}")
+
+thread = Thread(target=run_flask)
+thread.daemon = True
+thread.start()
+
+# --- ТВОИ ДАННЫЕ (УЖЕ БЕЗ ПРОБЕЛОВ) ---
 TG_TOKEN = '8279520356:AAFtZme6M5sXsqYXp1Eh2lAoGsnAhbzX0Rs'
 HF_TOKEN = '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'
 
-bot = telebot.TeleBot(TG_TOKEN)
-
-# 3. ПОДКЛЮЧЕНИЕ К НЕЙРОСЕТИ (С ПРОВЕРКОЙ)
+# Инициализация с защитой .strip() - она обрежет любые невидимые пробелы
+bot = telebot.TeleBot(TG_TOKEN.strip())
 client = None
-spaces = [
-    "https://huggingface.co/spaces/sczhou/CodeFormer",
-    "https://huggingface.co/spaces/TencentARC/GFPGAN"
-]
 
-def connect_client():
+def connect_to_ai():
     global client
-    for space in spaces:
+    models = ["sczhou/CodeFormer", "TencentARC/GFPGAN"]
+    for model_name in models:
         try:
-            print(f"Пробую подключиться к {space}...")
-            client = Client(space, token=HF_TOKEN)
-            print(f"✅ Успешно подключено к {space}!")
+            print(f"Подключение к {model_name}...")
+            client = Client(model_name, token=HF_TOKEN.strip())
+            print(f"✅ Подключено к {model_name}")
             return True
         except Exception as e:
-            print(f"❌ Ошибка подключения к {space}: {e}")
+            print(f"❌ Пропуск {model_name}: {e}")
     return False
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "Я в сети! Готов восстанавливать фото. Присылай файл! 📸")
+    bot.reply_to(message, "Я в сети! Присылай фото, и я восстановлю лицо. 📸")
 
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo(message):
-    global client
     if client is None:
-        if not connect_client():
-            bot.reply_to(message, "❌ Все нейросети сейчас заняты или недоступны. Попробуй позже.")
+        if not connect_to_ai():
+            bot.reply_to(message, "❌ Нейросети сейчас заняты. Попробуй через минуту.")
             return
 
-    msg = bot.reply_to(message, "⏳ Магия реставрации началась... (около 40 сек)")
+    msg = bot.reply_to(message, "⏳ Магия началась... Жду ответа от нейросети.")
     try:
         file_id = message.photo[-1].file_id if message.content_type == 'photo' else message.document.file_id
         file_info = bot.get_file(file_id)
@@ -61,7 +64,6 @@ def handle_photo(message):
         with open("input.jpg", 'wb') as new_file:
             new_file.write(downloaded_file)
         
-        # Запускаем обработку
         result = client.predict(
             image=handle_file("input.jpg"),
             codeformer_fidelity=0.5,
@@ -76,32 +78,15 @@ def handle_photo(message):
         bot.delete_message(message.chat.id, msg.message_id)
         
     except Exception as e:
-        print(f"Ошибка при обработке: {e}")
-        bot.edit_message_text(f"❌ Ошибка нейросети. Попробуй другое фото или повтори позже.", message.chat.id, msg.message_id)
+        print(f"Ошибка: {e}")
+        bot.edit_message_text(f"❌ Ошибка: {e}", message.chat.id, msg.message_id)
 
 if __name__ == "__main__":
-    keep_alive()
-    connect_client() # Пытаемся подключиться при запуске
-    print("Бот запущен!")
-    bot.polling(none_stop=True)
-if __name__ == "__main__":
+    time.sleep(2) # Даем Render время подцепить порт
+    connect_to_ai()
+    print("--- Бот запускает polling ---")
     try:
-        # 1. Запуск веб-сервера для Render
-        keep_alive() 
-        
-        # 2. Очистка старых соединений (очень важно после смены токена!)
-        print("Очистка старых сессий Telegram...")
         bot.remove_webhook()
-        
-        # 3. Подключение к нейросети
-        print("Подключение к нейросети...")
-        connect_client()
-        
-        print("✅ БОТ ЗАПУЩЕН И ГОТОВ К РАБОТЕ!")
-        
-        # 4. Запуск прослушивания сообщений
-        # skip_pending=True заставит бота игнорировать старые сообщения, присланные во время простоя
-        bot.polling(none_stop=True, skip_pending=True, timeout=60)
-        
+        bot.polling(none_stop=True, skip_pending=True)
     except Exception as e:
-        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА ПРИ ЗАПУСКЕ: {e}")
+        print(f"Ошибка запуска: {e}")

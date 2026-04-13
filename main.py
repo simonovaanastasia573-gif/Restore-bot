@@ -11,7 +11,7 @@ from PIL import Image
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 @app.route('/')
-def home(): return "Bober 4.7: Hachiko Mode Active"
+def home(): return "Bober 4.8: X-Ray Mode Active"
 Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
 
 # --- 2. КОНФИГУРАЦИЯ ---
@@ -26,19 +26,16 @@ MODELS = {
     "bg_remove": "briaai/RMBG-1.4"
 }
 
-# --- 3. ФУНКЦИЯ-ХАТИКО (ЖДЕТ ПОКА СЕРВЕР ПРОСНЕТСЯ) ---
+# --- 3. ФУНКЦИЯ-ХАТИКО ---
 def get_ai_client_with_wait(mode, bot, chat_id, msg_id):
-    # Даем серверу до 80 секунд на пробуждение (8 попыток по 10 сек)
     for attempt in range(1, 9): 
         try:
-            # Если сервер активен, подключится моментально
             return Client(MODELS[mode], token=HF_TOKEN)
         except Exception as e:
             if attempt < 8:
                 try:
-                    bot.edit_message_text(f"☕️ Сервер {mode} просыпается (попытка {attempt}/8). Ждем 10 сек...", chat_id, msg_id)
-                except:
-                    pass # Игнорируем ошибку Telegram, если текст не изменился
+                    bot.edit_message_text(f"☕️ Сервер {mode} просыпается ({attempt}/8). Ждем 10 сек...", chat_id, msg_id)
+                except: pass
                 time.sleep(10)
             else:
                 return None
@@ -56,7 +53,7 @@ def get_main_keyboard():
 @bot.message_handler(commands=['start', 'settings'])
 def start(message):
     user_data[message.chat.id] = {"mode": "restore"}
-    bot.send_message(message.chat.id, "Бобёр 4.7 готов! 🦫\nТеперь я умею дожидаться ответа от спящих серверов.", reply_markup=get_main_keyboard())
+    bot.send_message(message.chat.id, "Бобёр 4.8 (Рентген) готов! 🦫\nИщем скрытые ошибки.", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
@@ -70,13 +67,11 @@ def handle_photo(message):
     chat_id = message.chat.id
     mode = user_data.get(chat_id, {"mode": "restore"})["mode"]
     
-    status_msg = bot.reply_to(message, f"📡 Ищу сервер {mode}...")
-
-    # Вызываем умное подключение
+    status_msg = bot.reply_to(message, f"📡 Подключаюсь к {mode}...")
     client = get_ai_client_with_wait(mode, bot, chat_id, status_msg.message_id)
     
     if not client:
-        bot.edit_message_text(f"❌ Сервер {mode} так и не проснулся. Попробуй позже или выбери 'Реставрацию'.", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ Сервер {mode} не проснулся. Попробуй позже.", chat_id, status_msg.message_id)
         return
 
     bot.edit_message_text(f"⏳ Сервер готов! Рисую {mode}...", chat_id, status_msg.message_id)
@@ -89,17 +84,20 @@ def handle_photo(message):
         
         with open(input_path, 'wb') as f: f.write(downloaded_file)
         
+        # Сжимаем еще сильнее для стабильности (640px)
         with Image.open(input_path) as img:
             img = img.convert("RGB")
-            img.thumbnail((800, 800))
+            img.thumbnail((640, 640))
             img.save(input_path, "JPEG", quality=85)
 
-        # Вызов через fn_index=0 без всяких /predict
+        # Вызов с МАКСИМАЛЬНО безопасными параметрами
         if mode == "cartoon":
-            result = client.predict(handle_file(input_path), "FacePaint v2", fn_index=0)
+            # Используем базовую "version 2", она есть у всех AnimeGAN
+            result = client.predict(handle_file(input_path), "version 2", fn_index=0)
         elif mode == "restore":
             result = client.predict(handle_file(input_path), 0.7, True, True, 2, fn_index=0)
         elif mode == "bg_remove":
+            # Просто кидаем файл
             result = client.predict(handle_file(input_path), fn_index=0)
 
         output_path = result if isinstance(result, str) else result[0]
@@ -109,8 +107,10 @@ def handle_photo(message):
         bot.delete_message(chat_id, status_msg.message_id)
 
     except Exception as e:
-        print(f"Ошибка ИИ: {e}", flush=True)
-        bot.edit_message_text(f"⌛️ Сбой на этапе генерации. Отправь фото еще раз!", chat_id, status_msg.message_id)
+        # --- ВЫВОД РЕАЛЬНОЙ ОШИБКИ В TELEGRAM ---
+        error_text = str(e)[:300] # Берем первые 300 символов ошибки
+        print(f"Критическая ошибка: {error_text}", flush=True)
+        bot.edit_message_text(f"❌ Сбой генерации. Причина от сервера:\n\n`{error_text}`\n\nСделай скриншот этого сообщения!", chat_id, status_msg.message_id, parse_mode="Markdown")
             
     finally:
         if os.path.exists(input_path): os.remove(input_path)

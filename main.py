@@ -8,38 +8,25 @@ import time
 import sys
 from PIL import Image
 
-# --- 1. ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+# --- 1. ВЕБ-СЕРВЕР ---
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 @app.route('/')
-def home(): return "Bober 3.7: Ultimate Stability Active"
-
-# Запуск Flask в фоне
-def run_flask():
-    try:
-        app.run(host='0.0.0.0', port=PORT)
-    except Exception as e:
-        print(f"Ошибка Flask: {e}", flush=True)
-
-Thread(target=run_flask, daemon=True).start()
+def home(): return "Bober 3.8 is Alive"
+Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
 
 # --- 2. КЛЮЧИ ---
 TG_TOKEN = os.environ.get('TG_TOKEN')
 HF_TOKEN = os.environ.get('HF_TOKEN')
-
-if not TG_TOKEN or not HF_TOKEN:
-    print("❌ ОШИБКА: Токены не найдены в настройках Render!", flush=True)
-    # Не выходим через sys.exit, чтобы Render не считал это мгновенным крашем
-    time.sleep(3600) 
-
 bot = telebot.TeleBot(TG_TOKEN.strip())
 user_data = {}
 
+# Список моделей (Аниме заменен на супер-стабильный hysts)
 MODELS = {
     "restore": "sczhou/CodeFormer",
     "color": "piddnad/deoldify",
     "bg_remove": "briaai/RMBG-1.4",
-    "anime": "TencentARC/AnimeGANv2"
+    "anime": "hysts/AnimeGANv2" 
 }
 
 # --- 3. ИНТЕРФЕЙС ---
@@ -58,23 +45,21 @@ def get_main_keyboard():
 def start_cmd(message):
     chat_id = message.chat.id
     user_data[chat_id] = user_data.get(chat_id, {"mode": "restore", "fid": 0.7})
-    bot.send_message(chat_id, "Бот готов к работе! Выбери режим: 🦫", reply_markup=get_main_keyboard())
+    bot.send_message(chat_id, "Бобёр на связи! 🦫 Выбери режим:", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     chat_id = call.message.chat.id
-    user_data[chat_id] = user_data.get(chat_id, {"mode": "restore", "fid": 0.7})
     if call.data.startswith("set_mode_"):
-        user_data[chat_id]["mode"] = call.data.replace("set_mode_", "")
-        bot.answer_callback_query(call.id, f"Включен режим {user_data[chat_id]['mode']}")
-        bot.edit_message_text(f"✅ Режим {user_data[chat_id]['mode']} активен. Присылай фото!", chat_id, call.message.message_id)
+        user_data[chat_id] = {"mode": call.data.replace("set_mode_", ""), "fid": 0.7}
+        bot.edit_message_text(f"✅ Режим {user_data[chat_id]['mode']} включен. Шли фото!", chat_id, call.message.message_id)
 
 # --- 5. ОБРАБОТКА ФОТО ---
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo(message):
     chat_id = message.chat.id
     settings = user_data.get(chat_id, {"mode": "restore", "fid": 0.7})
-    msg = bot.reply_to(message, f"⏳ Нейросеть {settings['mode']} начала работу...")
+    msg = bot.reply_to(message, f"⏳ {settings['mode']} в процессе... Обычно это занимает 20-40 сек.")
     
     input_path = f"in_{chat_id}.jpg"
     try:
@@ -90,35 +75,33 @@ def handle_photo(message):
 
         client = Client(MODELS[settings['mode']], token=HF_TOKEN.strip())
         
+        # --- СПЕЦИФИЧНЫЕ НАСТРОЙКИ ДЛЯ КАЖДОЙ МОДЕЛИ ---
         if settings['mode'] == "restore":
-            job = client.submit(handle_file(input_path), settings['fid'], True, True, 2, fn_index=0)
+            result = client.predict(handle_file(input_path), settings['fid'], True, True, 2, fn_index=0)
         elif settings['mode'] == "anime":
-            job = client.submit(handle_file(input_path), "v2", fn_index=0)
+            # hysts/AnimeGANv2 требует фото и версию стиля ("v2" — самая крутая)
+            result = client.predict(handle_file(input_path), "v2", fn_index=0)
         else:
-            job = client.submit(handle_file(input_path), fn_index=0)
+            result = client.predict(handle_file(input_path), fn_index=0)
 
-        result = job.result(timeout=200)
         output_path = result if isinstance(result, str) else result[0]
-
         with open(output_path, 'rb') as f:
             bot.send_document(chat_id, f, caption=f"✨ Режим {settings['mode']} готов!")
         bot.delete_message(chat_id, msg.message_id)
 
     except Exception as e:
-        print(f"Ошибка ИИ: {e}", flush=True)
-        bot.edit_message_text(f"❌ Ошибка: Сервер нейросети занят. Попробуй еще раз через 10 секунд.", chat_id, msg.message_id)
+        print(f"Ошибка: {e}", flush=True)
+        # Если ошибка — даем пользователю шанс нажать еще раз
+        bot.edit_message_text(f"❌ Сервер Hugging Face притормаживает. Попробуй отправить это же фото еще раз прямо сейчас!", chat_id, msg.message_id)
             
     finally:
         if os.path.exists(input_path): os.remove(input_path)
 
-# --- 6. БЕСКОНЕЧНЫЙ ЗАПУСК ---
 if __name__ == "__main__":
-    print("--- Бобёр 3.7 запущен ---", flush=True)
+    print("--- Бобёр 3.8 запущен ---", flush=True)
     while True:
         try:
             bot.remove_webhook()
-            # Бесконечный цикл опроса Телеграма
             bot.polling(none_stop=True, skip_pending=True, interval=0, timeout=40)
-        except Exception as e:
-            print(f"Ошибка Polling: {e}. Перезапуск через 5 секунд...", flush=True)
+        except:
             time.sleep(5)

@@ -5,14 +5,13 @@ import os
 from flask import Flask
 from threading import Thread
 import time
-import sys
 from PIL import Image
 
 # --- 1. ВЕБ-СЕРВЕР ---
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 @app.route('/')
-def home(): return "Bober 4.3: 3D Cartoon Mode Active"
+def home(): return "Bober 4.4: Wake Up Logic Active"
 Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
 
 # --- 2. КОНФИГУРАЦИЯ ---
@@ -21,20 +20,27 @@ HF_TOKEN = os.environ.get('HF_TOKEN').strip()
 bot = telebot.TeleBot(TG_TOKEN)
 user_data = {}
 
-# Функция "ленивого" подключения (будит сервер только при запросе)
+# --- 3. УМНОЕ ПОДКЛЮЧЕНИЕ ---
 def get_ai_client(mode):
     spaces = {
         "restore": "sczhou/CodeFormer",
-        "cartoon": "hysts/AnimeGANv2", # Используем стабильный hysts
+        "cartoon": "hysts/AnimeGANv2",
         "bg_remove": "briaai/RMBG-1.4"
     }
-    try:
-        return Client(spaces[mode], token=HF_TOKEN)
-    except Exception as e:
-        print(f"Ошибка подключения к {mode}: {e}", flush=True)
-        return None
+    
+    # Пытаемся подключиться 3 раза с паузой
+    for attempt in range(3):
+        try:
+            print(f"🔄 Попытка подключения к {mode} (#{attempt + 1})...", flush=True)
+            return Client(spaces[mode], token=HF_TOKEN)
+        except Exception as e:
+            print(f"⚠️ Сервер {mode} просыпается... Ждем 15 сек. Ошибка: {e}", flush=True)
+            if attempt < 2:
+                time.sleep(15) # Даем серверу время на загрузку
+            else:
+                return None
 
-# --- 3. КЛАВИАТУРА ---
+# --- 4. КЛАВИАТУРА ---
 def get_main_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -47,46 +53,45 @@ def get_main_keyboard():
 @bot.message_handler(commands=['start', 'settings'])
 def start(message):
     user_data[message.chat.id] = {"mode": "restore"}
-    bot.send_message(message.chat.id, "Бобёр готов к творчеству! 🦫\nВыбери режим работы:", reply_markup=get_main_keyboard())
+    bot.send_message(message.chat.id, "Бобёр 4.4 на связи! 🦫\nЕсли сервер спит, я попробую его разбудить.", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     mode = call.data.replace("set_mode_", "")
     user_data[call.message.chat.id] = {"mode": mode}
-    bot.edit_message_text(f"✅ Режим {mode} включен. Жду фото! 📸", call.message.chat.id, call.message.message_id)
+    bot.edit_message_text(f"✅ Режим {mode} готов. Шли фото! 📸", call.message.chat.id, call.message.message_id)
 
-# --- 4. ОБРАБОТКА ФОТО ---
+# --- 5. ОБРАБОТКА ФОТО ---
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo(message):
     chat_id = message.chat.id
     mode = user_data.get(chat_id, {"mode": "restore"})["mode"]
     
-    # Пытаемся разбудить клиента
+    # Отправляем статус "Загрузка", чтобы пользователь видел активность
+    status_msg = bot.reply_to(message, f"📡 Проверяю статус сервера {mode}...")
+
     client = get_ai_client(mode)
     if not client:
-        bot.reply_to(message, "❌ Сервер ИИ сейчас спит. Попробуй отправить фото ещё раз через 10 секунд!")
+        bot.edit_message_text("❌ Сервер нейросети слишком долго просыпается. Попробуй ещё раз через минуту!", chat_id, status_msg.message_id)
         return
 
-    msg = bot.reply_to(message, f"⏳ Магия {mode} началась... Обычно это занимает до 40 секунд.")
+    bot.edit_message_text(f"⏳ Сервер готов! Магия {mode} началась...", chat_id, status_msg.message_id)
     
     input_path = f"in_{chat_id}.jpg"
     try:
-        # Скачивание
         file_id = message.photo[-1].file_id if message.content_type == 'photo' else message.document.file_id
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
         with open(input_path, 'wb') as f: f.write(downloaded_file)
         
-        # Подготовка (720px — идеал для бесплатного GPU)
         with Image.open(input_path) as img:
             img = img.convert("RGB")
             img.thumbnail((720, 720))
             img.save(input_path, "JPEG", quality=85)
 
-        # Вызов моделей
+        # Выполнение
         if mode == "cartoon":
-            # Выбираем стиль 'FacePaint v2' — он дает тот самый эффект 3D мультика
             result = client.predict(handle_file(input_path), "FacePaint v2", fn_index=0)
         elif mode == "restore":
             result = client.predict(handle_file(input_path), 0.7, True, True, 2, fn_index=0)
@@ -97,20 +102,14 @@ def handle_photo(message):
 
         with open(output_path, 'rb') as f:
             bot.send_document(chat_id, f, caption=f"✨ Твой {mode}-портрет готов!")
-        bot.delete_message(chat_id, msg.message_id)
+        bot.delete_message(chat_id, status_msg.message_id)
 
     except Exception as e:
-        print(f"Ошибка: {e}", flush=True)
-        bot.edit_message_text("❌ Сервер перегружен. Повтори попытку ещё раз!", chat_id, msg.message_id)
+        print(f"Ошибка выполнения: {e}", flush=True)
+        bot.edit_message_text("❌ Ошибка при обработке. Попробуй другое фото.", chat_id, status_msg.message_id)
             
     finally:
         if os.path.exists(input_path): os.remove(input_path)
 
 if __name__ == "__main__":
-    print("--- Бобёр 4.3 (3D Mode) запущен ---", flush=True)
-    while True:
-        try:
-            bot.remove_webhook()
-            bot.polling(none_stop=True, skip_pending=True, interval=0, timeout=60)
-        except:
-            time.sleep(5)
+    bot.polling(none_stop=True, skip_pending=True)

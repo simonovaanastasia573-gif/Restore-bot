@@ -1,3 +1,4 @@
 pyTelegramBotAPI
 gradio_client
 flask
+Pillow

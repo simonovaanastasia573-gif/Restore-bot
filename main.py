@@ -12,7 +12,7 @@ from PIL import Image
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 @app.route('/')
-def home(): return "Bober 3.5: Universal API Active"
+def home(): return "Bober 3.6 Iron Stable Active"
 Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
 
 # --- 2. КЛЮЧИ ---
@@ -30,7 +30,7 @@ MODELS = {
     "restore": "sczhou/CodeFormer",
     "color": "piddnad/deoldify",
     "bg_remove": "briaai/RMBG-1.4",
-    "anime": "akhaliq/AnimeGANv2"
+    "anime": "TencentARC/AnimeGANv2" # Сменили на более стабильную от Tencent
 }
 
 # --- 3. ИНТЕРФЕЙС ---
@@ -51,7 +51,7 @@ def get_main_keyboard():
 def start_cmd(message):
     chat_id = message.chat.id
     user_data[chat_id] = user_data.get(chat_id, {"mode": "restore", "fid": 0.7})
-    bot.send_message(chat_id, "Выбери магию ИИ:", reply_markup=get_main_keyboard())
+    bot.send_message(chat_id, "Привет! Выбери режим и присылай фото. 🦫", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
@@ -59,9 +59,8 @@ def callback_query(call):
     user_data[chat_id] = user_data.get(chat_id, {"mode": "restore", "fid": 0.7})
     if call.data.startswith("set_mode_"):
         user_data[chat_id]["mode"] = call.data.replace("set_mode_", "")
-        bot.edit_message_text(f"Режим {user_data[chat_id]['mode']} включен! Жду фото. 📸", chat_id, call.message.message_id)
-    elif call.data == "main_menu":
-        bot.edit_message_text("Выбери магию ИИ:", chat_id, call.message.message_id, reply_markup=get_main_keyboard())
+        bot.answer_callback_query(call.id, f"Режим {user_data[chat_id]['mode']} включен!")
+        bot.edit_message_text(f"✅ Режим {user_data[chat_id]['mode']} активен. Жду твое фото!", chat_id, call.message.message_id)
 
 # --- 5. ОБРАБОТКА ФОТО ---
 
@@ -69,67 +68,50 @@ def callback_query(call):
 def handle_photo(message):
     chat_id = message.chat.id
     settings = user_data.get(chat_id, {"mode": "restore", "fid": 0.7})
-    msg = bot.reply_to(message, f"⏳ Магия {settings['mode']} в процессе... Пожалуйста, подожди.")
+    msg = bot.reply_to(message, f"⏳ Нейросеть {settings['mode']} начала работу...")
     
     input_path = f"in_{chat_id}.jpg"
     try:
-        # Скачивание
+        # 1. Скачивание и сжатие
         file_id = message.photo[-1].file_id if message.content_type == 'photo' else message.document.file_id
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         with open(input_path, 'wb') as f: f.write(downloaded_file)
         
-        # Оптимизация
         with Image.open(input_path) as img:
             img = img.convert("RGB")
             img.thumbnail((1000, 1000))
             img.save(input_path, "JPEG", quality=85)
 
-        # Подключение к модели
+        # 2. Подключение
         client = Client(MODELS[settings['mode']], token=HF_TOKEN.strip())
         
-        # --- УНИВЕРСАЛЬНЫЙ ВЫЗОВ (БЕЗ api_name) ---
-        # Мы используем просто .predict() и ловим ошибки, чтобы переключиться на индекс
-        print(f"Запрос к {settings['mode']}...", flush=True)
+        # 3. Выполнение через .submit() для стабильности
+        print(f"[{chat_id}] Запуск {settings['mode']}...", flush=True)
         
-        try:
-            if settings['mode'] == "restore":
-                result = client.predict(handle_file(input_path), settings['fid'], True, True, 2)
-            elif settings['mode'] == "bg_remove":
-                result = client.predict(handle_file(input_path))
-            elif settings['mode'] == "color":
-                result = client.predict(handle_file(input_path))
-            elif settings['mode'] == "anime":
-                # Для Аниме важно передать 2 параметра: файл и версию
-                result = client.predict(handle_file(input_path), "version 2 (cherry blossoms)")
-        except Exception as e:
-            # Если падает с ошибкой "multiple endpoints", пробуем через fn_index=0
-            if "multiple endpoints" in str(e).lower():
-                print("Переключаюсь на fn_index=0...", flush=True)
-                if settings['mode'] == "anime":
-                    result = client.predict(handle_file(input_path), "version 2 (cherry blossoms)", fn_index=0)
-                elif settings['mode'] == "restore":
-                    result = client.predict(handle_file(input_path), settings['fid'], True, True, 2, fn_index=0)
-                else:
-                    result = client.predict(handle_file(input_path), fn_index=0)
-            else:
-                raise e
+        if settings['mode'] == "restore":
+            job = client.submit(handle_file(input_path), settings['fid'], True, True, 2, fn_index=0)
+        elif settings['mode'] == "anime":
+            # У TencentARC/AnimeGANv2 параметры: [img, style_version]
+            job = client.submit(handle_file(input_path), "v2", fn_index=0)
+        else:
+            job = client.submit(handle_file(input_path), fn_index=0)
 
-        # Вытаскиваем результат
+        result = job.result(timeout=200)
         output_path = result if isinstance(result, str) else result[0]
 
         with open(output_path, 'rb') as f:
-            bot.send_document(chat_id, f, caption=f"✅ Готово в режиме {settings['mode']}!")
+            bot.send_document(chat_id, f, caption=f"✨ Режим {settings['mode']} готов!")
         bot.delete_message(chat_id, msg.message_id)
 
     except Exception as e:
-        print(f"ERROR: {e}", flush=True)
-        bot.edit_message_text(f"❌ Ошибка ИИ: {str(e)[:100]}...\nПопробуй еще раз или смени режим.", chat_id, msg.message_id)
+        print(f"❌ Ошибка: {e}", flush=True)
+        bot.edit_message_text("❌ Сервер нейросети временно перегружен. Попробуй отправить фото еще раз через 10 секунд — это должно помочь!", chat_id, msg.message_id)
             
     finally:
         if os.path.exists(input_path): os.remove(input_path)
 
 if __name__ == "__main__":
-    print("--- Бобёр 3.5 готов к труду и обороне ---", flush=True)
+    print("--- Бобёр 3.6 в сети ---", flush=True)
     bot.remove_webhook()
     bot.polling(none_stop=True, skip_pending=True)

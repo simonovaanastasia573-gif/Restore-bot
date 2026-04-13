@@ -5,26 +5,22 @@ from flask import Flask
 from threading import Thread
 import time
 import sys
+from PIL import Image # Библиотека для сжатия
 
-# --- 1. ВЕБ-СЕРВЕР ДЛЯ RENDER (HEALTH CHECK) ---
+# --- 1. ВЕБ-СЕРВЕР ---
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Бот глубокой реставрации (Stable Version) активен"
+def home(): return "Бот со сжатием и защитой активен"
 
-def run_flask():
-    app.run(host='0.0.0.0', port=PORT)
+Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
 
-Thread(target=run_flask, daemon=True).start()
-
-# --- 2. ЗАГРУЗКА КЛЮЧЕЙ ---
+# --- 2. КЛЮЧИ ---
 TG_TOKEN = os.environ.get('TG_TOKEN')
 HF_TOKEN = os.environ.get('HF_TOKEN')
 
 if not TG_TOKEN or not HF_TOKEN:
-    print("❌ ОШИБКА: Токены не найдены в Environment Variables!", flush=True)
+    print("❌ ОШИБКА: Проверь переменные в Render!", flush=True)
     sys.exit(1)
 
 bot = telebot.TeleBot(TG_TOKEN.strip())
@@ -36,7 +32,7 @@ def connect_to_ai():
     try:
         print(f"Подключение к {space}...", flush=True)
         client = Client(space, token=HF_TOKEN.strip())
-        print(f"✅ Связь с нейросетью установлена.", flush=True)
+        print(f"✅ Связь установлена.", flush=True)
         return True
     except Exception as e:
         print(f"❌ Ошибка ИИ: {e}", flush=True)
@@ -44,70 +40,80 @@ def connect_to_ai():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "Режим глубокой реставрации (лицо + фон) активен. Теперь я умею ждать ответа дольше, таймауты должны исчезнуть! 📸")
+    bot.reply_to(message, "Я готов! Теперь я автоматически подготавливаю фото, чтобы не было ошибок. Присылай! 📸")
 
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo(message):
     global client
     if client is None:
         if not connect_to_ai():
-            bot.reply_to(message, "❌ Нейросеть не отвечает. Попробуй позже.")
+            bot.reply_to(message, "❌ Нейросеть сейчас не отвечает.")
             return
 
-    msg = bot.reply_to(message, "⏳ Идет глубокая обработка... Это может занять до 1-2 минут, не отключайся.")
+    msg = bot.reply_to(message, "⏳ Подготавливаю и обрабатываю фото...")
     
     try:
-        # Скачивание файла
+        # 1. Скачивание
         file_id = message.photo[-1].file_id if message.content_type == 'photo' else message.document.file_id
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
-        temp_input = "input.jpg"
-        with open(temp_input, 'wb') as f:
+        with open("raw_input.jpg", 'wb') as f:
             f.write(downloaded_file)
 
-        # --- НОВЫЙ МЕХАНИЗМ SUBMIT (БЕЗ ТАЙМАУТОВ) ---
-        print(f"Отправка задачи в очередь нейросети...", flush=True)
-        
-        # Создаем задачу (job) вместо прямого запроса
-        job = client.submit(
-            handle_file(temp_input), 
-            0.7,   # Fidelity (баланс качества и сходства)
-            True,  # Background Enhance (улучшение фона)
-            True,  # Face Upsample (детальное лицо)
-            2,     # Upscale (увеличение 2x)
-        )
-        
-        # Ждем результат до 300 секунд (5 минут)
-        result = job.result(timeout=300)
+        # 2. УМНОЕ СЖАТИЕ (Защита от Unexpected Error)
+        # Если фото слишком большое, сжимаем его до 1500px, чтобы сервер HF не падал
+        with Image.open("raw_input.jpg") as img:
+            img = img.convert("RGB")
+            max_size = 1500
+            if max(img.size) > max_size:
+                ratio = max_size / max(img.size)
+                new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                print(f"Фото сжато до {new_size}", flush=True)
+            img.save("input.jpg", "JPEG", quality=90)
+
+        # 3. ПОПЫТКА ОБРАБОТКИ
+        try:
+            print("Запуск нейросети (Full Mode)...", flush=True)
+            job = client.submit(
+                handle_file("input.jpg"), 
+                0.7,   # Fidelity
+                True,  # Background Enhance
+                True,  # Face Upsample
+                2      # Upscale
+            )
+            result = job.result(timeout=200)
+        except Exception as e:
+            print(f"Сбой Full Mode, пробуем Lite Mode: {e}", flush=True)
+            # Если не вышло с фоном, пробуем только лицо (это всегда работает)
+            job = client.submit(
+                handle_file("input.jpg"), 
+                0.7, 
+                False, # Отключаем фон для стабильности
+                True, 
+                1      # Без увеличения
+            )
+            result = job.result(timeout=150)
 
         output_path = result if isinstance(result, str) else result[0]
 
-        # Отправка результата
         with open(output_path, 'rb') as f:
-            bot.send_document(message.chat.id, f, caption="✅ Готово! Лицо и фон восстановлены.")
+            bot.send_document(message.chat.id, f, caption="✅ Реставрация завершена! (Использован безопасный режим)")
         
         bot.delete_message(message.chat.id, msg.message_id)
-        print("✅ Результат успешно отправлен.", flush=True)
 
     except Exception as e:
-        error_msg = str(e)
-        print(f"❌ Ошибка: {error_msg}", flush=True)
-        
-        if "timeout" in error_msg.lower():
-            bot.edit_message_text("❌ Сервер нейросети перегружен. Я попробовал подождать 5 минут, но ответа нет. Попробуй другое фото или чуть позже.", message.chat.id, msg.message_id)
-        else:
-            bot.edit_message_text(f"❌ Ошибка при обработке: {error_msg}", message.chat.id, msg.message_id)
+        print(f"❌ Критическая ошибка: {e}", flush=True)
+        bot.edit_message_text(f"❌ Не удалось обработать это фото. Попробуй другое. Ошибка: {e}", message.chat.id, msg.message_id)
 
 if __name__ == "__main__":
     time.sleep(2)
     connect_to_ai()
-    print("--- Бот запущен в режиме стабильного ожидания ---", flush=True)
-    
+    print("--- Бот запущен с защитой от сбоев ---", flush=True)
     while True:
         try:
             bot.remove_webhook()
             bot.polling(none_stop=True, skip_pending=True, interval=0, timeout=60)
         except Exception as e:
-            print(f"Перезапуск polling из-за ошибки: {e}", flush=True)
             time.sleep(5)

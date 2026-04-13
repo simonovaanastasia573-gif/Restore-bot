@@ -1,5 +1,5 @@
 pyTelegramBotAPI
-​gradio_client
-​Pillow
-​requests
-​flask
+gradio_client
+Pillow
+requests
+flask

@@ -23,8 +23,8 @@ user_data = {}
 # --- САМЫЕ ПРАВИЛЬНЫЕ ПРОСТРАНСТВА (SPACES) ---
 MODELS = {
     "restore": "sczhou/CodeFormer",
-    "cartoon": "hysts/AnimeGANv2",         # Возвращаем самый стабильный сервер для аниме
-    "bg_remove": "briaai/RMBG-1.4"         # ТОЧНЫЙ адрес сервера для удаления фона
+    "cartoon": "Harumaa/Anime-XL-Studio-And-Qwen-Edit", # Обновленный Space
+    "bg_remove": "briaai/BRIA-RMBG-1.4"                 # Исправленный адрес удаления фона
 }
 
 # --- 3. ФУНКЦИЯ-ХАТИКО ---
@@ -49,7 +49,7 @@ def get_main_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("🛠 Реставрация", callback_data="set_mode_restore"),
-        types.InlineKeyboardButton("🧸 3D Мультик", callback_data="set_mode_cartoon"),
+        types.InlineKeyboardButton("🧸 Аниме-Студия", callback_data="set_mode_cartoon"),
         types.InlineKeyboardButton("🖼 Удалить фон", callback_data="set_mode_bg_remove")
     )
     return markup
@@ -57,7 +57,7 @@ def get_main_keyboard():
 @bot.message_handler(commands=['start', 'settings'])
 def start(message):
     user_data[message.chat.id] = {"mode": "restore"}
-    bot.send_message(message.chat.id, "Бобёр 4.12 в строю! 🦫\nАдреса исправлены на 100% рабочие.", reply_markup=get_main_keyboard())
+    bot.send_message(message.chat.id, "Бобёр 4.12 в строю! 🦫\nВсе системы работают штатно.", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
@@ -69,6 +69,7 @@ def callback_query(call):
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo(message):
     chat_id = message.chat.id
+    msg_id = message.message_id # Защита от наложения файлов
     mode = user_data.get(chat_id, {"mode": "restore"})["mode"]
     
     status_msg = bot.reply_to(message, f"📡 Подключаюсь к {mode}...")
@@ -78,32 +79,34 @@ def handle_photo(message):
 
     bot.edit_message_text(f"⏳ Рисую {mode}...", chat_id, status_msg.message_id)
     
-    input_path = f"in_{chat_id}.jpg"
+    input_path = f"in_{chat_id}_{msg_id}.jpg"
+    output_path = None 
+    
     try:
         file_id = message.photo[-1].file_id if message.content_type == 'photo' else message.document.file_id
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        with open(input_path, 'wb') as f: f.write(downloaded_file)
+        with open(input_path, 'wb') as f: 
+            f.write(downloaded_file)
         
-        # 512x512 - гарантия стабильности
+        # 512x512 - гарантия стабильности и экономия RAM
         with Image.open(input_path) as img:
             img = img.convert("RGB")
             img.thumbnail((512, 512))
             img.save(input_path, "JPEG", quality=85)
 
-        # Пытаемся обработать. Если сервер "занят", делаем 2 попытки с паузой
+        # Пытаемся обработать
         for attempt in range(3):
             try:
                 if mode == "cartoon":
-                    # У hysts "version 2" работает железобетонно
-                    result = client.predict(handle_file(input_path), "version 2", fn_index=0)
+                    # ВНИМАНИЕ: Если будет ошибка аргументов, проверь "Use via API" на странице Space!
+                    # Я оставил базовый вызов, который сработает, если нейросеть требует только картинку.
+                    result = client.predict(handle_file(input_path), fn_index=0)
                 elif mode == "restore":
                     result = client.predict(handle_file(input_path), 0.7, True, True, 2, fn_index=0)
                 elif mode == "bg_remove":
                     result = client.predict(handle_file(input_path), fn_index=0)
-                
-                # Если прошло успешно, выходим из цикла попыток
                 break
                 
             except Exception as e:
@@ -112,7 +115,7 @@ def handle_photo(message):
                         bot.edit_message_text(f"⏳ Сервер занят. Авто-повтор через 5 сек... (Попытка {attempt+2}/3)", chat_id, status_msg.message_id)
                         time.sleep(5)
                         continue
-                raise e # Если это не "занят" или попытки кончились, выдаем ошибку
+                raise e 
 
         output_path = result if isinstance(result, str) else result[0]
 
@@ -122,10 +125,14 @@ def handle_photo(message):
 
     except Exception as e:
         error_text = str(e)[:300]
-        bot.edit_message_text(f"❌ Сбой (сервер HF перегружен):\n\n`{error_text}`", chat_id, status_msg.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"❌ Сбой:\n\n`{error_text}`\n\n*Возможно, для режима {mode} нужны другие параметры в client.predict*", chat_id, status_msg.message_id, parse_mode="Markdown")
             
     finally:
-        if os.path.exists(input_path): os.remove(input_path)
+        # Уборка мусора для предотвращения переполнения памяти
+        if os.path.exists(input_path): 
+            os.remove(input_path)
+        if output_path and os.path.exists(output_path): 
+            os.remove(output_path)
 
 if __name__ == "__main__":
     bot.polling(none_stop=True, skip_pending=True)

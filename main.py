@@ -1,4 +1,5 @@
 import telebot
+from telebot import types
 from gradio_client import Client, handle_file
 import os
 from flask import Flask
@@ -11,8 +12,7 @@ from PIL import Image
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 @app.route('/')
-def home(): return "BoberPhoto Ultra-Stable is Active"
-
+def home(): return "Multi-AI Bober is Active"
 Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
 
 # --- 2. КЛЮЧИ ---
@@ -20,105 +20,125 @@ TG_TOKEN = os.environ.get('TG_TOKEN')
 HF_TOKEN = os.environ.get('HF_TOKEN')
 
 if not TG_TOKEN or not HF_TOKEN:
-    print("❌ ОШИБКА: Токены не найдены!", flush=True)
+    print("❌ ОШИБКА: Проверь переменные!", flush=True)
     sys.exit(1)
 
 bot = telebot.TeleBot(TG_TOKEN.strip())
-client = None
 
-def connect_to_ai():
-    global client
-    space = "sczhou/CodeFormer" 
-    try:
-        client = Client(space, token=HF_TOKEN.strip())
-        print(f"✅ Связь с CodeFormer установлена.", flush=True)
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка ИИ: {e}", flush=True)
-        return False
+# Хранилище настроек пользователей (в памяти)
+user_data = {}
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "Привет! Я Бобёр-реставратор. 🦫\nПрисылай фото, и я сделаю его четким. Теперь я работаю еще стабильнее!")
+# Константы моделей
+MODELS = {
+    "restore": "sczhou/CodeFormer",
+    "color": "piddnad/deoldify",
+    "bg_remove": "briaai/RMBG-1.4",
+    "anime": "akhaliq/AnimeGANv2"
+}
+
+# --- 3. ФУНКЦИИ ИНТЕРФЕЙСА ---
+
+def get_main_keyboard():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn1 = types.InlineKeyboardButton("🛠 Реставрация", callback_data="set_mode_restore")
+    btn2 = types.InlineKeyboardButton("🎨 Раскрасить (Ч/Б)", callback_data="set_mode_color")
+    btn3 = types.InlineKeyboardButton("🖼 Удалить фон", callback_data="set_mode_bg_remove")
+    btn4 = types.InlineKeyboardButton("⛩ Аниме-стиль", callback_data="set_mode_anime")
+    markup.add(btn1, btn2, btn3, btn4)
+    return markup
+
+def get_restore_keyboard():
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    markup.add(
+        types.InlineKeyboardButton("Мягко (0.9)", callback_data="set_fid_0.9"),
+        types.InlineKeyboardButton("Средне (0.7)", callback_data="set_fid_0.7"),
+        types.InlineKeyboardButton("Ультра (0.3)", callback_data="set_fid_0.3")
+    )
+    markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="main_menu"))
+    return markup
+
+# --- 4. ОБРАБОТКА КОМАНД ---
+
+@bot.message_handler(commands=['start', 'settings'])
+def start_cmd(message):
+    chat_id = message.chat.id
+    if chat_id not in user_data:
+        user_data[chat_id] = {"mode": "restore", "fid": 0.7}
+    
+    bot.send_message(chat_id, "Выбери режим работы ИИ:", reply_markup=get_main_keyboard())
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    chat_id = call.message.chat.id
+    if chat_id not in user_data: user_data[chat_id] = {"mode": "restore", "fid": 0.7}
+
+    if call.data.startswith("set_mode_"):
+        mode = call.data.replace("set_mode_", "")
+        user_data[chat_id]["mode"] = mode
+        if mode == "restore":
+            bot.edit_message_text("Выбрана реставрация. Выбери интенсивность:", chat_id, call.message.message_id, reply_markup=get_restore_keyboard())
+        else:
+            bot.edit_message_text(f"Режим {mode} активирован. Присылай фото!", chat_id, call.message.message_id)
+    
+    elif call.data.startswith("set_fid_"):
+        fid = float(call.data.replace("set_fid_", ""))
+        user_data[chat_id]["fid"] = fid
+        bot.edit_message_text(f"Интенсивность {fid} установлена. Жду фото!", chat_id, call.message.message_id)
+    
+    elif call.data == "main_menu":
+        bot.edit_message_text("Выбери режим работы ИИ:", chat_id, call.message.message_id, reply_markup=get_main_keyboard())
+
+# --- 5. ГЛАВНАЯ ЛОГИКА ОБРАБОТКИ ФОТО ---
 
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo(message):
-    global client
-    if client is None:
-        if not connect_to_ai():
-            bot.reply_to(message, "❌ Нейросеть спит. Попробуй через минуту.")
-            return
-
-    msg = bot.reply_to(message, "⏳ Начинаю полную реставрацию (лицо + фон)...")
+    chat_id = message.chat.id
+    settings = user_data.get(chat_id, {"mode": "restore", "fid": 0.7})
+    
+    msg = bot.reply_to(message, f"⏳ Запускаю ИИ ({settings['mode']})...")
     
     try:
-        # 1. Скачивание
+        # Скачивание и подготовка (сжатие до 1200px для стабильности)
         file_id = message.photo[-1].file_id if message.content_type == 'photo' else message.document.file_id
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        input_path = f"raw_{message.chat.id}.jpg"
-        processed_path = f"input_{message.chat.id}.jpg"
-
-        with open(input_path, 'wb') as f:
-            f.write(downloaded_file)
-
-        # 2. УМНОЕ ПОДГОТОВЛЕНИЕ (Сжатие для стабильности)
+        input_path = f"in_{chat_id}.jpg"
+        with open(input_path, 'wb') as f: f.write(downloaded_file)
+        
         with Image.open(input_path) as img:
             img = img.convert("RGB")
-            # 1200px — идеальный баланс для бесплатного GPU
-            max_size = 1200 
-            if max(img.size) > max_size:
-                ratio = max_size / max(img.size)
-                new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
-            img.save(processed_path, "JPEG", quality=95)
+            img.thumbnail((1200, 1200))
+            img.save(input_path, "JPEG", quality=90)
 
-        # 3. ПОПЫТКА №1: ПОЛНАЯ РЕСТАВРАЦИЯ
-        try:
-            print(f"[{message.chat.id}] Запуск Full Mode...", flush=True)
-            job = client.submit(
-                handle_file(processed_path), 
-                0.7,   # Fidelity
-                True,  # Background Enhance (Фон)
-                True,  # Face Upsample (Лицо)
-                2      # Upscale 2x
-            )
-            result = job.result(timeout=250) # Ждем долго
-            caption = "✅ Реставрация завершена! Улучшено всё фото (4K)."
-            
-        except Exception as e:
-            # ПОПЫТКА №2: БЕЗОПАСНЫЙ РЕЖИМ (Только лицо)
-            print(f"[{message.chat.id}] Сбой Full Mode ({e}), перехожу в Lite...", flush=True)
-            bot.edit_message_text("⚠️ Фон слишком сложный, перехожу в безопасный режим (только лицо)...", message.chat.id, msg.message_id)
-            
-            job = client.submit(
-                handle_file(processed_path), 
-                0.7, 
-                False, # Отключаем фон
-                True,  # Оставляем лицо
-                1      # Без увеличения
-            )
-            result = job.result(timeout=150)
-            caption = "✅ Реставрация завершена! (Использован безопасный режим для лица)."
+        # Подключаемся к нужной модели
+        client = Client(MODELS[settings['mode']], token=HF_TOKEN.strip())
+        
+        # Выполнение задачи в зависимости от режима
+        if settings['mode'] == "restore":
+            job = client.submit(handle_file(input_path), settings['fid'], True, True, 2)
+        elif settings['mode'] == "bg_remove":
+            job = client.submit(handle_file(input_path))
+        elif settings['mode'] == "color":
+            job = client.submit(handle_file(input_path))
+        elif settings['mode'] == "anime":
+            job = client.submit(handle_file(input_path), "version 2 (cherry blossoms)")
 
+        result = job.result(timeout=200)
         output_path = result if isinstance(result, str) else result[0]
 
         with open(output_path, 'rb') as f:
-            bot.send_document(message.chat.id, f, caption=caption)
+            bot.send_document(chat_id, f, caption=f"✅ Готово! Режим: {settings['mode']}")
         
-        bot.delete_message(message.chat.id, msg.message_id)
+        bot.delete_message(chat_id, msg.message_id)
 
     except Exception as e:
-        print(f"❌ Критическая ошибка: {e}", flush=True)
-        bot.edit_message_text(f"❌ Не удалось обработать фото: {e}", message.chat.id, msg.message_id)
+        print(f"Error: {e}", flush=True)
+        bot.edit_message_text(f"❌ Ошибка: {e}. Попробуй еще раз или смени режим.", chat_id, msg.message_id)
     
-    # Чистим временные файлы
     finally:
-        for f in [input_path, processed_path]:
-            if os.path.exists(f): os.remove(f)
+        if os.path.exists(input_path): os.remove(input_path)
 
 if __name__ == "__main__":
-    connect_to_ai()
     bot.remove_webhook()
-    bot.polling(none_stop=True, skip_pending=True)
+    bot.polling(none_stop=True)

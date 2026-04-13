@@ -11,7 +11,7 @@ from PIL import Image
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 @app.route('/')
-def home(): return "Bober 4.6: No-Predict Clean API Active"
+def home(): return "Bober 4.7: Hachiko Mode Active"
 Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
 
 # --- 2. КОНФИГУРАЦИЯ ---
@@ -20,21 +20,28 @@ HF_TOKEN = os.environ.get('HF_TOKEN').strip()
 bot = telebot.TeleBot(TG_TOKEN)
 user_data = {}
 
-# НАШИ ЗЕРКАЛА
 MODELS = {
     "restore": "sczhou/CodeFormer",
     "cartoon": "hysts/AnimeGANv2", 
     "bg_remove": "briaai/RMBG-1.4"
 }
 
-# --- 3. УМНОЕ ПОДКЛЮЧЕНИЕ ---
-def get_ai_client(mode):
-    try:
-        print(f"🔄 Подключаюсь к {mode}...", flush=True)
-        return Client(MODELS[mode], token=HF_TOKEN)
-    except Exception as e:
-        print(f"⚠️ Ошибка подключения к {mode}: {e}", flush=True)
-        return None
+# --- 3. ФУНКЦИЯ-ХАТИКО (ЖДЕТ ПОКА СЕРВЕР ПРОСНЕТСЯ) ---
+def get_ai_client_with_wait(mode, bot, chat_id, msg_id):
+    # Даем серверу до 80 секунд на пробуждение (8 попыток по 10 сек)
+    for attempt in range(1, 9): 
+        try:
+            # Если сервер активен, подключится моментально
+            return Client(MODELS[mode], token=HF_TOKEN)
+        except Exception as e:
+            if attempt < 8:
+                try:
+                    bot.edit_message_text(f"☕️ Сервер {mode} просыпается (попытка {attempt}/8). Ждем 10 сек...", chat_id, msg_id)
+                except:
+                    pass # Игнорируем ошибку Telegram, если текст не изменился
+                time.sleep(10)
+            else:
+                return None
 
 # --- 4. КЛАВИАТУРА ---
 def get_main_keyboard():
@@ -49,7 +56,7 @@ def get_main_keyboard():
 @bot.message_handler(commands=['start', 'settings'])
 def start(message):
     user_data[message.chat.id] = {"mode": "restore"}
-    bot.send_message(message.chat.id, "Бобёр 4.6 готов! 🦫\nНикаких /predict, работаем напрямую.", reply_markup=get_main_keyboard())
+    bot.send_message(message.chat.id, "Бобёр 4.7 готов! 🦫\nТеперь я умею дожидаться ответа от спящих серверов.", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
@@ -63,17 +70,16 @@ def handle_photo(message):
     chat_id = message.chat.id
     mode = user_data.get(chat_id, {"mode": "restore"})["mode"]
     
-    status_msg = bot.reply_to(message, f"📡 Бужу нейросеть {mode}...")
+    status_msg = bot.reply_to(message, f"📡 Ищу сервер {mode}...")
 
-    client = get_ai_client(mode)
+    # Вызываем умное подключение
+    client = get_ai_client_with_wait(mode, bot, chat_id, status_msg.message_id)
+    
     if not client:
-        time.sleep(10)
-        client = get_ai_client(mode)
-        if not client:
-            bot.edit_message_text("❌ Сервер ИИ спит глубоким сном. Попробуй через минуту.", chat_id, status_msg.message_id)
-            return
+        bot.edit_message_text(f"❌ Сервер {mode} так и не проснулся. Попробуй позже или выбери 'Реставрацию'.", chat_id, status_msg.message_id)
+        return
 
-    bot.edit_message_text(f"⏳ Магия началась! Обрабатываю {mode}...", chat_id, status_msg.message_id)
+    bot.edit_message_text(f"⏳ Сервер готов! Рисую {mode}...", chat_id, status_msg.message_id)
     
     input_path = f"in_{chat_id}.jpg"
     try:
@@ -88,7 +94,7 @@ def handle_photo(message):
             img.thumbnail((800, 800))
             img.save(input_path, "JPEG", quality=85)
 
-        # --- ВЫЗОВ ЧЕРЕЗ fn_index=0 (КАК ТЫ И ПРОСИЛ) ---
+        # Вызов через fn_index=0 без всяких /predict
         if mode == "cartoon":
             result = client.predict(handle_file(input_path), "FacePaint v2", fn_index=0)
         elif mode == "restore":
@@ -104,7 +110,7 @@ def handle_photo(message):
 
     except Exception as e:
         print(f"Ошибка ИИ: {e}", flush=True)
-        bot.edit_message_text(f"⌛️ Упс! Сервер перегружен. Попробуй прислать это же фото ещё раз через 15 секунд.", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"⌛️ Сбой на этапе генерации. Отправь фото еще раз!", chat_id, status_msg.message_id)
             
     finally:
         if os.path.exists(input_path): os.remove(input_path)

@@ -8,20 +8,29 @@ import time
 import sys
 from PIL import Image
 
-# --- 1. ВЕБ-СЕРВЕР ---
+# --- 1. ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 @app.route('/')
-def home(): return "Bober 3.6 Iron Stable Active"
-Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
+def home(): return "Bober 3.7: Ultimate Stability Active"
+
+# Запуск Flask в фоне
+def run_flask():
+    try:
+        app.run(host='0.0.0.0', port=PORT)
+    except Exception as e:
+        print(f"Ошибка Flask: {e}", flush=True)
+
+Thread(target=run_flask, daemon=True).start()
 
 # --- 2. КЛЮЧИ ---
 TG_TOKEN = os.environ.get('TG_TOKEN')
 HF_TOKEN = os.environ.get('HF_TOKEN')
 
 if not TG_TOKEN or not HF_TOKEN:
-    print("❌ ОШИБКА: Токены не найдены!", flush=True)
-    sys.exit(1)
+    print("❌ ОШИБКА: Токены не найдены в настройках Render!", flush=True)
+    # Не выходим через sys.exit, чтобы Render не считал это мгновенным крашем
+    time.sleep(3600) 
 
 bot = telebot.TeleBot(TG_TOKEN.strip())
 user_data = {}
@@ -30,11 +39,10 @@ MODELS = {
     "restore": "sczhou/CodeFormer",
     "color": "piddnad/deoldify",
     "bg_remove": "briaai/RMBG-1.4",
-    "anime": "TencentARC/AnimeGANv2" # Сменили на более стабильную от Tencent
+    "anime": "TencentARC/AnimeGANv2"
 }
 
 # --- 3. ИНТЕРФЕЙС ---
-
 def get_main_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -46,12 +54,11 @@ def get_main_keyboard():
     return markup
 
 # --- 4. CALLBACKS ---
-
 @bot.message_handler(commands=['start', 'settings'])
 def start_cmd(message):
     chat_id = message.chat.id
     user_data[chat_id] = user_data.get(chat_id, {"mode": "restore", "fid": 0.7})
-    bot.send_message(chat_id, "Привет! Выбери режим и присылай фото. 🦫", reply_markup=get_main_keyboard())
+    bot.send_message(chat_id, "Бот готов к работе! Выбери режим: 🦫", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
@@ -59,11 +66,10 @@ def callback_query(call):
     user_data[chat_id] = user_data.get(chat_id, {"mode": "restore", "fid": 0.7})
     if call.data.startswith("set_mode_"):
         user_data[chat_id]["mode"] = call.data.replace("set_mode_", "")
-        bot.answer_callback_query(call.id, f"Режим {user_data[chat_id]['mode']} включен!")
-        bot.edit_message_text(f"✅ Режим {user_data[chat_id]['mode']} активен. Жду твое фото!", chat_id, call.message.message_id)
+        bot.answer_callback_query(call.id, f"Включен режим {user_data[chat_id]['mode']}")
+        bot.edit_message_text(f"✅ Режим {user_data[chat_id]['mode']} активен. Присылай фото!", chat_id, call.message.message_id)
 
 # --- 5. ОБРАБОТКА ФОТО ---
-
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo(message):
     chat_id = message.chat.id
@@ -72,7 +78,6 @@ def handle_photo(message):
     
     input_path = f"in_{chat_id}.jpg"
     try:
-        # 1. Скачивание и сжатие
         file_id = message.photo[-1].file_id if message.content_type == 'photo' else message.document.file_id
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
@@ -83,16 +88,11 @@ def handle_photo(message):
             img.thumbnail((1000, 1000))
             img.save(input_path, "JPEG", quality=85)
 
-        # 2. Подключение
         client = Client(MODELS[settings['mode']], token=HF_TOKEN.strip())
-        
-        # 3. Выполнение через .submit() для стабильности
-        print(f"[{chat_id}] Запуск {settings['mode']}...", flush=True)
         
         if settings['mode'] == "restore":
             job = client.submit(handle_file(input_path), settings['fid'], True, True, 2, fn_index=0)
         elif settings['mode'] == "anime":
-            # У TencentARC/AnimeGANv2 параметры: [img, style_version]
             job = client.submit(handle_file(input_path), "v2", fn_index=0)
         else:
             job = client.submit(handle_file(input_path), fn_index=0)
@@ -105,13 +105,20 @@ def handle_photo(message):
         bot.delete_message(chat_id, msg.message_id)
 
     except Exception as e:
-        print(f"❌ Ошибка: {e}", flush=True)
-        bot.edit_message_text("❌ Сервер нейросети временно перегружен. Попробуй отправить фото еще раз через 10 секунд — это должно помочь!", chat_id, msg.message_id)
+        print(f"Ошибка ИИ: {e}", flush=True)
+        bot.edit_message_text(f"❌ Ошибка: Сервер нейросети занят. Попробуй еще раз через 10 секунд.", chat_id, msg.message_id)
             
     finally:
         if os.path.exists(input_path): os.remove(input_path)
 
+# --- 6. БЕСКОНЕЧНЫЙ ЗАПУСК ---
 if __name__ == "__main__":
-    print("--- Бобёр 3.6 в сети ---", flush=True)
-    bot.remove_webhook()
-    bot.polling(none_stop=True, skip_pending=True)
+    print("--- Бобёр 3.7 запущен ---", flush=True)
+    while True:
+        try:
+            bot.remove_webhook()
+            # Бесконечный цикл опроса Телеграма
+            bot.polling(none_stop=True, skip_pending=True, interval=0, timeout=40)
+        except Exception as e:
+            print(f"Ошибка Polling: {e}. Перезапуск через 5 секунд...", flush=True)
+            time.sleep(5)

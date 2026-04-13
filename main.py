@@ -11,7 +11,7 @@ from PIL import Image
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 @app.route('/')
-def home(): return "Bober 4.8: X-Ray Mode Active"
+def home(): return "Bober 4.9: Correct Spaces Active"
 Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
 
 # --- 2. КОНФИГУРАЦИЯ ---
@@ -20,24 +20,32 @@ HF_TOKEN = os.environ.get('HF_TOKEN').strip()
 bot = telebot.TeleBot(TG_TOKEN)
 user_data = {}
 
+# --- ИСПРАВЛЕННЫЕ АДРЕСА ---
 MODELS = {
     "restore": "sczhou/CodeFormer",
-    "cartoon": "hysts/AnimeGANv2", 
-    "bg_remove": "briaai/RMBG-1.4"
+    "cartoon": "akhaliq/AnimeGANv2",         # Правильный адрес для аниме
+    "bg_remove": "briaai/BRIA-RMBG-1.4"      # Правильный адрес для удаления фона
 }
 
-# --- 3. ФУНКЦИЯ-ХАТИКО ---
+# --- 3. ФУНКЦИЯ-ХАТИКО (С УМНЫМ РЕНТГЕНОМ) ---
 def get_ai_client_with_wait(mode, bot, chat_id, msg_id):
     for attempt in range(1, 9): 
         try:
             return Client(MODELS[mode], token=HF_TOKEN)
         except Exception as e:
+            error_str = str(e)
+            # Если адрес неверный (404), нет смысла ждать
+            if "404" in error_str or "Not Found" in error_str:
+                bot.edit_message_text(f"❌ Критическая ошибка: Адрес {MODELS[mode]} не существует!", chat_id, msg_id)
+                return None
+                
             if attempt < 8:
                 try:
                     bot.edit_message_text(f"☕️ Сервер {mode} просыпается ({attempt}/8). Ждем 10 сек...", chat_id, msg_id)
                 except: pass
                 time.sleep(10)
             else:
+                bot.edit_message_text(f"❌ Сервер {mode} не ответил за 80 секунд.", chat_id, msg_id)
                 return None
 
 # --- 4. КЛАВИАТУРА ---
@@ -45,7 +53,7 @@ def get_main_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("🛠 Реставрация", callback_data="set_mode_restore"),
-        types.InlineKeyboardButton("🧸 3D Мультик", callback_data="set_mode_cartoon"),
+        types.InlineKeyboardButton("⛩ Аниме Мультик", callback_data="set_mode_cartoon"),
         types.InlineKeyboardButton("🖼 Удалить фон", callback_data="set_mode_bg_remove")
     )
     return markup
@@ -53,7 +61,7 @@ def get_main_keyboard():
 @bot.message_handler(commands=['start', 'settings'])
 def start(message):
     user_data[message.chat.id] = {"mode": "restore"}
-    bot.send_message(message.chat.id, "Бобёр 4.8 (Рентген) готов! 🦫\nИщем скрытые ошибки.", reply_markup=get_main_keyboard())
+    bot.send_message(message.chat.id, "Бобёр 4.9 готов! 🦫\nАдреса исправлены, полет нормальный.", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
@@ -71,8 +79,7 @@ def handle_photo(message):
     client = get_ai_client_with_wait(mode, bot, chat_id, status_msg.message_id)
     
     if not client:
-        bot.edit_message_text(f"❌ Сервер {mode} не проснулся. Попробуй позже.", chat_id, status_msg.message_id)
-        return
+        return # Сообщение об ошибке уже вывела функция выше
 
     bot.edit_message_text(f"⏳ Сервер готов! Рисую {mode}...", chat_id, status_msg.message_id)
     
@@ -84,20 +91,17 @@ def handle_photo(message):
         
         with open(input_path, 'wb') as f: f.write(downloaded_file)
         
-        # Сжимаем еще сильнее для стабильности (640px)
         with Image.open(input_path) as img:
             img = img.convert("RGB")
-            img.thumbnail((640, 640))
+            img.thumbnail((800, 800))
             img.save(input_path, "JPEG", quality=85)
 
-        # Вызов с МАКСИМАЛЬНО безопасными параметрами
+        # Вызов с правильными параметрами для новых зеркал
         if mode == "cartoon":
-            # Используем базовую "version 2", она есть у всех AnimeGAN
-            result = client.predict(handle_file(input_path), "version 2", fn_index=0)
+            result = client.predict(handle_file(input_path), "version 2 (cherry blossoms)", fn_index=0)
         elif mode == "restore":
             result = client.predict(handle_file(input_path), 0.7, True, True, 2, fn_index=0)
         elif mode == "bg_remove":
-            # Просто кидаем файл
             result = client.predict(handle_file(input_path), fn_index=0)
 
         output_path = result if isinstance(result, str) else result[0]
@@ -107,10 +111,9 @@ def handle_photo(message):
         bot.delete_message(chat_id, status_msg.message_id)
 
     except Exception as e:
-        # --- ВЫВОД РЕАЛЬНОЙ ОШИБКИ В TELEGRAM ---
-        error_text = str(e)[:300] # Берем первые 300 символов ошибки
+        error_text = str(e)[:300]
         print(f"Критическая ошибка: {error_text}", flush=True)
-        bot.edit_message_text(f"❌ Сбой генерации. Причина от сервера:\n\n`{error_text}`\n\nСделай скриншот этого сообщения!", chat_id, status_msg.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"❌ Сбой генерации. Ошибка:\n\n`{error_text}`", chat_id, status_msg.message_id, parse_mode="Markdown")
             
     finally:
         if os.path.exists(input_path): os.remove(input_path)

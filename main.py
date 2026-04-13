@@ -23,8 +23,8 @@ user_data = {}
 # --- САМЫЕ ПРАВИЛЬНЫЕ ПРОСТРАНСТВА (SPACES) ---
 MODELS = {
     "restore": "sczhou/CodeFormer",
-    "cartoon": "Harumaa/Anime-XL-Studio-And-Qwen-Edit", # Обновленный Space
-    "bg_remove": "briaai/BRIA-RMBG-1.4"                 # Исправленный адрес удаления фона
+    "cartoon": "akhaliq/AnimeGANv2", # Стабильный сервер для аниме
+    "bg_remove": "briaai/BRIA-RMBG-1.4"
 }
 
 # --- 3. ФУНКЦИЯ-ХАТИКО ---
@@ -49,7 +49,7 @@ def get_main_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("🛠 Реставрация", callback_data="set_mode_restore"),
-        types.InlineKeyboardButton("🧸 Аниме-Студия", callback_data="set_mode_cartoon"),
+        types.InlineKeyboardButton("🧸 3D Мультик", callback_data="set_mode_cartoon"),
         types.InlineKeyboardButton("🖼 Удалить фон", callback_data="set_mode_bg_remove")
     )
     return markup
@@ -69,7 +69,7 @@ def callback_query(call):
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_photo(message):
     chat_id = message.chat.id
-    msg_id = message.message_id # Защита от наложения файлов
+    msg_id = message.message_id 
     mode = user_data.get(chat_id, {"mode": "restore"})["mode"]
     
     status_msg = bot.reply_to(message, f"📡 Подключаюсь к {mode}...")
@@ -90,19 +90,15 @@ def handle_photo(message):
         with open(input_path, 'wb') as f: 
             f.write(downloaded_file)
         
-        # 512x512 - гарантия стабильности и экономия RAM
         with Image.open(input_path) as img:
             img = img.convert("RGB")
             img.thumbnail((512, 512))
             img.save(input_path, "JPEG", quality=85)
 
-        # Пытаемся обработать
         for attempt in range(3):
             try:
                 if mode == "cartoon":
-                    # ВНИМАНИЕ: Если будет ошибка аргументов, проверь "Use via API" на странице Space!
-                    # Я оставил базовый вызов, который сработает, если нейросеть требует только картинку.
-                    result = client.predict(handle_file(input_path), fn_index=0)
+                    result = client.predict(handle_file(input_path), "version 2", fn_index=0)
                 elif mode == "restore":
                     result = client.predict(handle_file(input_path), 0.7, True, True, 2, fn_index=0)
                 elif mode == "bg_remove":
@@ -125,10 +121,9 @@ def handle_photo(message):
 
     except Exception as e:
         error_text = str(e)[:300]
-        bot.edit_message_text(f"❌ Сбой:\n\n`{error_text}`\n\n*Возможно, для режима {mode} нужны другие параметры в client.predict*", chat_id, status_msg.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"❌ Сбой:\n\n`{error_text}`", chat_id, status_msg.message_id, parse_mode="Markdown")
             
     finally:
-        # Уборка мусора для предотвращения переполнения памяти
         if os.path.exists(input_path): 
             os.remove(input_path)
         if output_path and os.path.exists(output_path): 

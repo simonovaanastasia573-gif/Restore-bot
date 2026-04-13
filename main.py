@@ -11,7 +11,7 @@ from PIL import Image
 PORT = int(os.environ.get('PORT', 10000))
 app = Flask('')
 @app.route('/')
-def home(): return "Bober 4.4: Wake Up Logic Active"
+def home(): return "Bober 4.6: No-Predict Clean API Active"
 Thread(target=lambda: app.run(host='0.0.0.0', port=PORT), daemon=True).start()
 
 # --- 2. КОНФИГУРАЦИЯ ---
@@ -20,25 +20,21 @@ HF_TOKEN = os.environ.get('HF_TOKEN').strip()
 bot = telebot.TeleBot(TG_TOKEN)
 user_data = {}
 
+# НАШИ ЗЕРКАЛА
+MODELS = {
+    "restore": "sczhou/CodeFormer",
+    "cartoon": "hysts/AnimeGANv2", 
+    "bg_remove": "briaai/RMBG-1.4"
+}
+
 # --- 3. УМНОЕ ПОДКЛЮЧЕНИЕ ---
 def get_ai_client(mode):
-    spaces = {
-        "restore": "sczhou/CodeFormer",
-        "cartoon": "hysts/AnimeGANv2",
-        "bg_remove": "briaai/RMBG-1.4"
-    }
-    
-    # Пытаемся подключиться 3 раза с паузой
-    for attempt in range(3):
-        try:
-            print(f"🔄 Попытка подключения к {mode} (#{attempt + 1})...", flush=True)
-            return Client(spaces[mode], token=HF_TOKEN)
-        except Exception as e:
-            print(f"⚠️ Сервер {mode} просыпается... Ждем 15 сек. Ошибка: {e}", flush=True)
-            if attempt < 2:
-                time.sleep(15) # Даем серверу время на загрузку
-            else:
-                return None
+    try:
+        print(f"🔄 Подключаюсь к {mode}...", flush=True)
+        return Client(MODELS[mode], token=HF_TOKEN)
+    except Exception as e:
+        print(f"⚠️ Ошибка подключения к {mode}: {e}", flush=True)
+        return None
 
 # --- 4. КЛАВИАТУРА ---
 def get_main_keyboard():
@@ -53,13 +49,13 @@ def get_main_keyboard():
 @bot.message_handler(commands=['start', 'settings'])
 def start(message):
     user_data[message.chat.id] = {"mode": "restore"}
-    bot.send_message(message.chat.id, "Бобёр 4.4 на связи! 🦫\nЕсли сервер спит, я попробую его разбудить.", reply_markup=get_main_keyboard())
+    bot.send_message(message.chat.id, "Бобёр 4.6 готов! 🦫\nНикаких /predict, работаем напрямую.", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
     mode = call.data.replace("set_mode_", "")
     user_data[call.message.chat.id] = {"mode": mode}
-    bot.edit_message_text(f"✅ Режим {mode} готов. Шли фото! 📸", call.message.chat.id, call.message.message_id)
+    bot.edit_message_text(f"✅ Режим {mode} активен. Жду твое фото!", call.message.chat.id, call.message.message_id)
 
 # --- 5. ОБРАБОТКА ФОТО ---
 @bot.message_handler(content_types=['photo', 'document'])
@@ -67,15 +63,17 @@ def handle_photo(message):
     chat_id = message.chat.id
     mode = user_data.get(chat_id, {"mode": "restore"})["mode"]
     
-    # Отправляем статус "Загрузка", чтобы пользователь видел активность
-    status_msg = bot.reply_to(message, f"📡 Проверяю статус сервера {mode}...")
+    status_msg = bot.reply_to(message, f"📡 Бужу нейросеть {mode}...")
 
     client = get_ai_client(mode)
     if not client:
-        bot.edit_message_text("❌ Сервер нейросети слишком долго просыпается. Попробуй ещё раз через минуту!", chat_id, status_msg.message_id)
-        return
+        time.sleep(10)
+        client = get_ai_client(mode)
+        if not client:
+            bot.edit_message_text("❌ Сервер ИИ спит глубоким сном. Попробуй через минуту.", chat_id, status_msg.message_id)
+            return
 
-    bot.edit_message_text(f"⏳ Сервер готов! Магия {mode} началась...", chat_id, status_msg.message_id)
+    bot.edit_message_text(f"⏳ Магия началась! Обрабатываю {mode}...", chat_id, status_msg.message_id)
     
     input_path = f"in_{chat_id}.jpg"
     try:
@@ -87,26 +85,26 @@ def handle_photo(message):
         
         with Image.open(input_path) as img:
             img = img.convert("RGB")
-            img.thumbnail((720, 720))
+            img.thumbnail((800, 800))
             img.save(input_path, "JPEG", quality=85)
 
-        # Выполнение
+        # --- ВЫЗОВ ЧЕРЕЗ fn_index=0 (КАК ТЫ И ПРОСИЛ) ---
         if mode == "cartoon":
             result = client.predict(handle_file(input_path), "FacePaint v2", fn_index=0)
         elif mode == "restore":
             result = client.predict(handle_file(input_path), 0.7, True, True, 2, fn_index=0)
-        else:
+        elif mode == "bg_remove":
             result = client.predict(handle_file(input_path), fn_index=0)
 
         output_path = result if isinstance(result, str) else result[0]
 
         with open(output_path, 'rb') as f:
-            bot.send_document(chat_id, f, caption=f"✨ Твой {mode}-портрет готов!")
+            bot.send_document(chat_id, f, caption=f"✨ Готово!")
         bot.delete_message(chat_id, status_msg.message_id)
 
     except Exception as e:
-        print(f"Ошибка выполнения: {e}", flush=True)
-        bot.edit_message_text("❌ Ошибка при обработке. Попробуй другое фото.", chat_id, status_msg.message_id)
+        print(f"Ошибка ИИ: {e}", flush=True)
+        bot.edit_message_text(f"⌛️ Упс! Сервер перегружен. Попробуй прислать это же фото ещё раз через 15 секунд.", chat_id, status_msg.message_id)
             
     finally:
         if os.path.exists(input_path): os.remove(input_path)
